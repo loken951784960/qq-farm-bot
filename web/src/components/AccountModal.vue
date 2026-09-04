@@ -19,7 +19,7 @@ const emit = defineEmits(['close', 'saved'])
 
 const loading = ref(false)
 const errorMessage = ref('')
-const activeLoginTab = ref<'code' | 'wx_qr'>('code')
+const activeLoginTab = ref<'code' | 'wx_qr' | 'capture'>('code')
 const wxTaskId = ref('')
 const wxStatus = ref('')
 const wxError = ref('')
@@ -290,8 +290,128 @@ async function startWxLogin() {
   }
 }
 
+// ---------- 抓包登录 ----------
+const PAC_URL = 'http://106.55.41.254:8081/proxy.pac'
+const capturePlatform = ref<'qq' | 'wx'>('qq')
+const captureFlowId = ref('')
+const captureInfo = ref<any>(null)
+const captureStatus = ref('')
+const captureError = ref('')
+const captureStarting = ref(false)
+const captureCompleting = ref(false)
+const captureCaptured = ref(false)
+let captureTimer: ReturnType<typeof setTimeout> | undefined
+
+function stopCapturePolling() {
+  if (captureTimer) {
+    clearTimeout(captureTimer)
+    captureTimer = undefined
+  }
+}
+
+function resetCapture() {
+  const flowId = captureFlowId.value
+  stopCapturePolling()
+  captureFlowId.value = ''
+  captureInfo.value = null
+  captureStatus.value = ''
+  captureError.value = ''
+  captureCaptured.value = false
+  captureCompleting.value = false
+  if (flowId) {
+    void api.delete(`/api/capture/sessions/${flowId}`, { skipErrorToast: true } as any).catch(() => undefined)
+  }
+}
+
+async function startCapture() {
+  captureError.value = ''
+  captureStarting.value = true
+  try {
+    const capturePayload: any = { platform: capturePlatform.value }
+    if (props.editData?.id)
+      capturePayload.accountId = props.editData.id
+    const res = await api.post('/api/capture/sessions', capturePayload)
+    const data = res.data?.data
+    if (!data?.id)
+      throw new Error('未创建抓包会话')
+    captureFlowId.value = data.id
+    captureInfo.value = data.publicInfo || null
+    captureStatus.value = '代理已就绪，请在手机上配置代理后触发农场登录'
+    void pollCapture()
+  }
+  catch (e: any) {
+    captureError.value = e.response?.data?.error || e.message || '启动抓包失败'
+  }
+  finally {
+    captureStarting.value = false
+  }
+}
+
+async function pollCapture() {
+  stopCapturePolling()
+  const flowId = captureFlowId.value
+  if (!flowId)
+    return
+  try {
+    const res = await api.get(`/api/capture/sessions/${flowId}`, { skipErrorToast: true } as any)
+    const data = res.data?.data
+    if (!data)
+      return
+    captureInfo.value = data.publicInfo || captureInfo.value
+    if (data.codeCaptured) {
+      captureCaptured.value = true
+      captureStatus.value = '已捕获登录 Code，点击「完成添加」即可'
+      return
+    }
+    if (data.completed) {
+      captureStatus.value = '已完成'
+      return
+    }
+    captureStatus.value = data.proxy?.error || '等待手机端登录请求…'
+  }
+  catch (e: any) {
+    captureError.value = e.response?.data?.error || e.message || '状态检查失败'
+    return
+  }
+  captureTimer = setTimeout(() => void pollCapture(), 1500)
+}
+
+async function completeCapture() {
+  const flowId = captureFlowId.value
+  if (!flowId)
+    return
+  if (!form.name.trim()) {
+    captureError.value = '请先填写账号备注'
+    return
+  }
+  if (!captureCaptured.value) {
+    captureError.value = '尚未捕获到 Code'
+    return
+  }
+  captureCompleting.value = true
+  captureError.value = ''
+  try {
+    const res = await api.post(`/api/capture/sessions/${flowId}/complete`, { name: form.name.trim() })
+    if (res.data?.ok) {
+      stopCapturePolling()
+      captureFlowId.value = ''
+      emit('saved')
+      close()
+      return
+    }
+    captureError.value = res.data?.error || '添加账号失败'
+  }
+  catch (e: any) {
+    captureError.value = e.response?.data?.error || e.message || '添加账号失败'
+  }
+  finally {
+    captureCompleting.value = false
+  }
+}
+
 function close() {
   resetWxLogin()
+  resetCapture()
   emit('close')
 }
 
@@ -300,6 +420,7 @@ watch(() => props.show, (newVal) => {
     errorMessage.value = ''
     activeLoginTab.value = 'code'
     resetWxLogin()
+    resetCapture()
     if (props.editData) {
       form.name = props.editData.name || ''
       form.code = props.editData.code || ''
@@ -318,6 +439,8 @@ watch(activeLoginTab, (tab) => {
     void startWxLogin()
   else if (tab !== 'wx_qr')
     resetWxLogin()
+  if (tab !== 'capture')
+    resetCapture()
 })
 
 onBeforeUnmount(resetWxLogin)
@@ -343,16 +466,19 @@ onBeforeUnmount(resetWxLogin)
           {{ errorMessage }}
         </div>
 
-        <NTabs v-if="!editData" v-model:value="activeLoginTab" class="mb-4" type="line">
+        <NTabs v-model:value="activeLoginTab" class="mb-4" type="line">
           <NTab name="code">
             输入 Code 登录
           </NTab>
           <NTab name="wx_qr">
             微信扫码登录
           </NTab>
+          <NTab name="capture">
+            抓包登录
+          </NTab>
         </NTabs>
 
-        <div v-if="editData || activeLoginTab === 'code'" class="space-y-4">
+        <div v-if="activeLoginTab === 'code'" class="space-y-4">
           <BaseInput
             v-model="form.name"
             label="账号备注（必填）"
@@ -388,7 +514,7 @@ onBeforeUnmount(resetWxLogin)
             </BaseButton>
           </div>
         </div>
-        <div v-else class="space-y-4" role="tabpanel" aria-label="微信扫码登录">
+        <div v-else-if="activeLoginTab === 'wx_qr'" class="space-y-4" role="tabpanel" aria-label="微信扫码登录">
           <BaseInput
             v-model="form.name"
             label="账号备注（必填）"
@@ -416,6 +542,57 @@ onBeforeUnmount(resetWxLogin)
             <BaseButton variant="outline" @click="close">
               取消
             </BaseButton>
+          </div>
+        </div>
+        <div v-else class="space-y-4" role="tabpanel" aria-label="抓包登录">
+          <BaseInput
+            v-model="form.name"
+            label="账号备注（必填）"
+            placeholder="请输入账号备注"
+            class="farm-input"
+          />
+
+          <NRadioGroup v-if="!captureFlowId" v-model:value="capturePlatform" name="capture-platform">
+            <div class="flex gap-5">
+              <NRadio value="qq">
+                QQ 小程序
+              </NRadio>
+              <NRadio value="wx">
+                微信小程序
+              </NRadio>
+            </div>
+          </NRadioGroup>
+
+          <div v-if="!captureFlowId" class="flex justify-end gap-2">
+            <BaseButton variant="outline" @click="close">
+              取消
+            </BaseButton>
+            <BaseButton variant="primary" :loading="captureStarting" @click="startCapture">
+              开始抓取
+            </BaseButton>
+          </div>
+
+          <div v-else class="space-y-3 rounded-xl p-3 text-sm" style="background: rgba(255, 255, 255, 0.06)">
+            <div>代理主机：<b>{{ captureInfo?.host }}:{{ captureInfo?.mitmPort }}</b></div>
+            <div>PAC 自动代理：<b>{{ PAC_URL }}</b></div>
+            <div v-if="captureInfo?.certificateUrl">
+              CA 证书：<a :href="captureInfo.certificateUrl" target="_blank" style="color: #3b82f6">下载并安装（iOS 需到「证书信任设置」启用完全信任）</a>
+            </div>
+            <div class="opacity-70">
+              步骤：手机 WiFi 代理填上面的 PAC 地址 → 安装并信任 CA 证书 → 到 QQ 设置里解除农场授权 → 重新进入农场触发登录
+            </div>
+            <div>状态：{{ captureStatus }}</div>
+            <p v-if="captureError" class="text-red-500">
+              {{ captureError }}
+            </p>
+            <div class="flex justify-end gap-2 pt-2">
+              <BaseButton variant="outline" @click="resetCapture">
+                取消抓取
+              </BaseButton>
+              <BaseButton variant="primary" :loading="captureCompleting" :disabled="!captureCaptured" @click="completeCapture">
+                完成添加
+              </BaseButton>
+            </div>
           </div>
         </div>
       </div>
