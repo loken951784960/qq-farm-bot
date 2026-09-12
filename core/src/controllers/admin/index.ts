@@ -28,6 +28,7 @@ const {
     emitRealtimeLog: _emitLog,
     emitRealtimeAccountLog: _emitAccountLog,
 } = require('./socket');
+const { setupTerminal } = require('./terminal');
 
 const adminLogger = createModuleLogger('admin');
 
@@ -102,6 +103,12 @@ function startAdminServer(dataProvider: any): void {
     // Setup Socket.IO
     setupSocketIO(ctx);
 
+    // Setup Web Terminal (admin only)
+    try {
+        setupTerminal(ctx);
+    } catch (err: any) {
+        adminLogger.warn('web terminal not available', { error: err && err.message });
+    }
 }
 
 function emitRealtimeStatus(accountId: string, status: any): void {

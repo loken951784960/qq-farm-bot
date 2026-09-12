@@ -6,6 +6,7 @@ export interface MenuItem {
   component: () => Promise<any>
   meta?: {
     fullBleed?: boolean
+    roles?: Array<'admin' | 'user'>
   }
 }
 
@@ -58,6 +59,14 @@ export const menuRoutes: MenuItem[] = [
     label: '游戏商城',
     icon: 'i-carbon-shopping-cart',
     component: () => import('@/views/GameMall.vue'),
+  },
+  {
+    path: 'terminal',
+    name: 'terminal',
+    label: '终端',
+    icon: 'i-carbon-terminal',
+    component: () => import('@/views/Terminal.vue'),
+    meta: { roles: ['admin'] },
   },
   {
     path: 'settings',
